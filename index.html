@@ -461,9 +461,9 @@ tr:hover td{background:var(--pl2);}
 (function(){
   // Solo estas 3 son seguras en el codigo - las demas van en Supabase
   const cfg={
-    tt_sb_url: '',  // <- Supabase Project URL  (https://xxx.supabase.co)
-    tt_sb_key: '',  // <- Supabase Anon Key     (eyJh...)
-    tt_admin:  '',  // <- Tu email de admin     (tu@email.com)
+    tt_sb_url: 'https://zuerxjovqfhzmcnsnmbz.supabase.co',  // <- Supabase Project URL  (https://xxx.supabase.co)
+    tt_sb_key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1ZXJ4am92cWZoem1jbnNubWJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMjY3OTQsImV4cCI6MjA5NzkwMjc5NH0.GKswwLdcTNp1A-HAZGV1ameAgRwtYKjgJaRumiEbpDI',  // <- Supabase Anon Key     (eyJh...)
+    tt_admin:  'isaiaslobo829@gmail.com',  // <- Tu email de admin     (tu@email.com)
   };
   Object.entries(cfg).forEach(([k,v])=>{if(v.trim())localStorage.setItem(k,v.trim());});
 })();
