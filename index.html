@@ -455,6 +455,20 @@ tr:hover td{background:var(--pl2);}
 </div><!-- /app-view -->
 
 <script>
+// ██████████████████████████████████████████████████████████
+// ★  COMPLETÁ TUS CLAVES AQUÍ — entre las comillas vacías  ★
+// ██████████████████████████████████████████████████████████
+(function(){
+  // Solo estas 3 son seguras en el codigo - las demas van en Supabase
+  const cfg={
+    tt_sb_url: 'https://zuerxjovqfhzmcnsnmbz.supabase.co',  // <- Supabase Project URL  (https://xxx.supabase.co)
+    tt_sb_key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1ZXJ4am92cWZoem1jbnNubWJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMjY3OTQsImV4cCI6MjA5NzkwMjc5NH0.GKswwLdcTNp1A-HAZGV1ameAgRwtYKjgJaRumiEbpDI',  // <- Supabase Anon Key     (eyJh...)
+    tt_admin:  'isaiaslobo829@gmail.com',  // <- Tu email de admin     (tu@email.com)
+  };
+  Object.entries(cfg).forEach(([k,v])=>{if(v.trim())localStorage.setItem(k,v.trim());});
+})();
+// ██████████████████████████████████████████████████████████
+
 // ══════════════════════════════════════════════════════════
 // 1. CONFIG & STORAGE KEYS
 // ══════════════════════════════════════════════════════════
@@ -470,8 +484,13 @@ const NARRATORS={
   en:{label:'Knox — dark',key:'ven'}
 };
 const LANG_NAMES={es:'Español',de:'Alemán',pl:'Polaco',en:'Inglés'};
-const gk=k=>localStorage.getItem(k)||'';
-const sk=(k,v)=>v?localStorage.setItem(k,v):localStorage.removeItem(k);
+// Sensitive API keys use sessionStorage (cleared on tab close); Supabase creds use localStorage
+const SENSITIVE=['tt_ant','tt_yt','tt_el','tt_ves','tt_vde','tt_vpl','tt_ven'];
+const gk=k=>sessionStorage.getItem(k)||localStorage.getItem(k)||'';
+const sk=(k,v)=>{
+  if(SENSITIVE.includes(k)){v?sessionStorage.setItem(k,v):sessionStorage.removeItem(k);}
+  else{v?localStorage.setItem(k,v):localStorage.removeItem(k);}
+};
 const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ══════════════════════════════════════════════════════════
@@ -495,15 +514,23 @@ async function checkSession(){
   else{showEl('login-view');hideEl('app-view');}
 }
 
-function enterApp(){
+async function enterApp(){
   hideEl('login-view');showEl('app-view');
   document.getElementById('sbEmail').textContent=user?.email||'Demo';
   const admin=gk(K.admin);
   if(!admin||user?.email===admin)showEl('adminNav');
-  refreshApiStatus();
-  if(db)pingLastSeen();
+  if(db){await loadKeysFromSupabase();pingLastSeen();}
+  refreshApiStatus();updateNarratorInfo();
   loadSavedScripts();loadSavedIdeas();
   nav('home');
+}
+
+async function loadKeysFromSupabase(){
+  try{
+    const{data}=await db.from('config').select('key,value');
+    if(!data)return;
+    data.forEach(row=>{if(row.value)sk(row.key,row.value);});
+  }catch(e){console.warn('Could not load config from Supabase:',e);}
 }
 
 async function pingLastSeen(){
@@ -577,21 +604,35 @@ document.getElementById('openCfgBtn').addEventListener('click',()=>{
     document.getElementById('cfgVen').value=gk(K.ven);
   }
 });
-document.getElementById('saveCfgBtn').addEventListener('click',()=>{
-  sk(K.ant,document.getElementById('cfgAnt').value.trim());
-  sk(K.yt,document.getElementById('cfgYT').value.trim());
-  sk(K.el,document.getElementById('cfgEL').value.trim());
-  sk(K.admin,document.getElementById('cfgAdmin').value.trim());
-  sk(K.sbUrl,document.getElementById('cfgSbUrl').value.trim());
-  sk(K.sbKey,document.getElementById('cfgSbKey').value.trim());
-  sk(K.ves,document.getElementById('cfgVes').value.trim());
-  sk(K.vde,document.getElementById('cfgVde').value.trim());
-  sk(K.vpl,document.getElementById('cfgVpl').value.trim());
-  sk(K.ven,document.getElementById('cfgVen').value.trim());
+document.getElementById('saveCfgBtn').addEventListener('click',async()=>{
+  const vals={
+    [K.ant]:  document.getElementById('cfgAnt').value.trim(),
+    [K.yt]:   document.getElementById('cfgYT').value.trim(),
+    [K.el]:   document.getElementById('cfgEL').value.trim(),
+    [K.admin]:document.getElementById('cfgAdmin').value.trim(),
+    [K.sbUrl]:document.getElementById('cfgSbUrl').value.trim(),
+    [K.sbKey]:document.getElementById('cfgSbKey').value.trim(),
+    [K.ves]:  document.getElementById('cfgVes').value.trim(),
+    [K.vde]:  document.getElementById('cfgVde').value.trim(),
+    [K.vpl]:  document.getElementById('cfgVpl').value.trim(),
+    [K.ven]:  document.getElementById('cfgVen').value.trim(),
+  };
+  // Save locally
+  Object.entries(vals).forEach(([k,v])=>sk(k,v));
+  // Save sensitive keys to Supabase so collaborators get them automatically
+  if(db){
+    const sbKeys=Object.entries(vals)
+      .filter(([k,v])=>SENSITIVE.includes(k)&&v)
+      .map(([key,value])=>({key,value,updated_at:new Date().toISOString()}));
+    if(sbKeys.length){
+      await db.from('config').upsert(sbKeys,{onConflict:'key'});
+    }
+  }
   refreshApiStatus();updateNarratorInfo();
   const m=document.getElementById('cfgMsg');
-  m.textContent='✓ Guardado';m.className='t-ok';
-  setTimeout(()=>{m.textContent='';initSb();},2000);
+  m.textContent=db?'✓ Guardado en Supabase — todos los colaboradores lo reciben al iniciar sesión':'✓ Guardado localmente';
+  m.className='t-ok';
+  setTimeout(()=>{m.textContent='';initSb();},3500);
 });
 function refreshApiStatus(){
   const items=[
@@ -1186,14 +1227,6 @@ function dl(blob,name){
 document.addEventListener('DOMContentLoaded',()=>{
   initSb();checkSession();updateNarratorInfo();refreshApiStatus();
 });
-
-  // Pre-cargar claves
-
-localStorage.setItem('tt_sb_url','https://zuerxjovqfhzmcnsnmbz.supabase.co');
-
-localStorage.setItem('tt_sb_key','eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1ZXJ4am92cWZoem1jbnNubWJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMjY3OTQsImV4cCI6MjA5NzkwMjc5NH0.GKswwLdcTNp1A-HAZGV1ameAgRwtYKjgJaRumiEbpDI');
-
-localStorage.setItem('tt_admin','isaiaslobo829@gmail.com');
 </script>
 </body>
 </html>
