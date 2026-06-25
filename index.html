@@ -1010,7 +1010,9 @@ async function ytSearch(query,opts){
   var k=gk(K.yt);
   if(!k)throw new Error('Falta YouTube API Key.');
   // Add -shorts to exclude YouTube Shorts, use long duration for documentaries
-  var cleanQuery=query+' -shorts';
+  // Exclude games, simulators, AI-generated, animations
+  var GAME_EXCL=' -simulator -gameplay -"american truck" -"euro truck" -ATS -ETS2 -GTA -animation -CGI -"AI generated" -shorts';
+  var cleanQuery=query+GAME_EXCL;
   var params=new URLSearchParams({part:'snippet',q:cleanQuery,type:'video',maxResults:opts.max||10,videoDuration:'long',order:opts.order||'relevance',key:k});
   if(opts.after)params.set('publishedAfter',opts.after);
   var r=await fetch('https://www.googleapis.com/youtube/v3/search?'+params);
@@ -1050,6 +1052,17 @@ function titleClean(t){
   if(/SUBSCRIBE|LIKE AND|CLICK|FREE|EPIC|INSANE|AMAZING|SHOCKING|VIRAL/i.test(t))s-=22;
   if(/shorts/i.test(t))s-=50;
   return Math.max(0,s);
+}
+
+// Returns false if title suggests game/simulation/AI content
+function isRealFootage(title){
+  var t=title.toLowerCase();
+  var fakeTerms=['simulator','gameplay','gaming','american truck sim','euro truck sim',
+    ' ats ','ets2','ets 2','gta ','mod ','mods','ai generated','ai render',
+    'cgi ','animation','animated','render','virtual','3d model','rc truck',
+    'minecraft','roblox','lego'];
+  for(var i=0;i<fakeTerms.length;i++){if(t.indexOf(fakeTerms[i])>-1)return false;}
+  return true;
 }
 
 function parseSegs(raw){
@@ -1125,8 +1138,10 @@ async function searchClipPuesto(i,manualQ){
   try{
     var q=manualQ||await getClipQuery(seg);
     var vids=await ytSearch(q+' -shorts',{max:10});
+    // Filter out games/simulators/AI, then sort by title cleanliness
+    vids=vids.filter(function(v){return isRealFootage(v.title);});
     vids=vids.sort(function(a,b){return titleClean(b.title)-titleClean(a.title);}).slice(0,6);
-    seg.videos=vids;seg.query=q.replace(/ -shorts/,'').trim();seg.status='done';
+    seg.videos=vids;seg.query=q.replace(/\s*-[^\s]+/g,'').trim();seg.status='done';
   }catch(e){seg.status='error';seg.errorMsg=e.message;}
   renderClips();
 }
@@ -1556,40 +1571,51 @@ document.getElementById('vDetectBtn').addEventListener('click',async function(){
   if(!script){alert('Pega el guion primero.');return;}
   var btn=this;btn.disabled=true;btn.textContent='Detectando...';
   document.getElementById('vMsg').textContent='';
-  // Try regex detection first (free, no Claude needed)
+  // STEP 1: Try regex first (free, instant)
   var regexSegs=parseSegs(script);
   if(regexSegs.length>=2){
-    vSegs=regexSegs.map(function(s){
-      return{key:'top'+s.num,label:'top'+s.num+'.mp3',text:s.text};
-    });
-    // Add intro if there's text before first segment
-    var firstPos=script.indexOf(regexSegs[0].text.slice(0,20));
-    if(firstPos>80){
-      vSegs.unshift({key:'intro',label:'intro.mp3',text:script.slice(0,firstPos).trim()});
-    }
-    vBlobs={};renderVSegs();
+    vSegs=[];vBlobs={};
+    // Intro: text before first segment
+    var firstSeg=regexSegs[0];
+    var firstPos=script.indexOf(firstSeg.text.slice(0,30));
+    if(firstPos>80){vSegs.push({key:'intro',label:'intro.mp3',text:script.slice(0,firstPos).trim()});}
+    // Each segment: from its start to the next segment start
+    regexSegs.forEach(function(s){vSegs.push({key:'top'+s.num,label:'top'+s.num+'.mp3',text:s.text});});
+    // Outro: if last segment ends before script end, check for outro
+    var lastSeg=regexSegs[regexSegs.length-1];
+    var lastPos=script.indexOf(lastSeg.text.slice(0,30));
+    var lastEnd=lastPos+lastSeg.text.length;
+    if(lastEnd<script.length-100){vSegs.push({key:'outro',label:'outro.mp3',text:script.slice(lastEnd).trim()});}
+    renderVSegs();
     document.getElementById('vGenAll').disabled=false;
-    document.getElementById('vMsg').textContent=vSegs.length+' segmentos detectados (sin IA).';
+    document.getElementById('vMsg').textContent=vSegs.length+' segmentos detectados (gratis, sin IA).';
     document.getElementById('vMsg').className='t-ok';
     btn.disabled=false;btn.textContent='Detectar segmentos con IA';return;
   }
-  // Regex didn't find enough segments, use Claude (costs tokens)
-  document.getElementById('vMsg').textContent='Regex no encontro segmentos, usando IA...';
+  // STEP 2: Regex failed, use Claude with LINE NUMBERS approach
+  document.getElementById('vMsg').textContent='Usando IA para detectar segmentos...';
   try{
-    // Step 1: Ask AI for segment MARKERS only (tiny JSON, never breaks)
-    var sys='Analyze this script and identify narration segments. Return ONLY this exact JSON, no other text, no code blocks:\n[{"key":"intro","label":"intro.mp3","start":"first 6 unique words of this segment"},{"key":"top10","label":"top10.mp3","start":"first 6 unique words"}]\nKeys to use: intro (if exists), top10 down to top1, outro (if exists).\nIf no numbered structure, use segment1, segment2, etc.\nOnly return the JSON array, nothing else.';
-    var raw=await callAI(sys,script.slice(0,3000),600);
-    var markers=safeParseVoiceJSON(raw);
-    if(!markers||!markers.length)throw new Error('No se detectaron segmentos. Revisá que el guion tenga estructura.');
-    // Step 2: Use markers to extract actual text from original script
-    vSegs=extractTextByMarkers(script,markers);
-    if(!vSegs||!vSegs.length)throw new Error('No se pudo extraer el texto de los segmentos.');
-    vBlobs={};
-    renderVSegs();
+    var lines=script.split('\n');
+    var numbered=lines.map(function(l,i){return (i+1)+': '+l;}).join('\n');
+    var sys='Analyze this numbered script. Find every narration segment. Return ONLY a valid JSON array with line numbers:\n[{"key":"intro","label":"intro.mp3","from":1,"to":4},{"key":"top10","label":"top10.mp3","from":5,"to":11}]\nKeys: intro (if exists before first top), top10 down to top1, outro (if exists). from/to are line numbers (1-based, inclusive). No text, no explanation, just the JSON array.';
+    var raw=await callAI(sys,numbered.slice(0,3500),400);
+    var s=raw.indexOf('['),e=raw.lastIndexOf(']');
+    if(s===-1)throw new Error('La IA no devolvio JSON valido.');
+    var boundaries=JSON.parse(raw.slice(s,e+1));
+    if(!Array.isArray(boundaries)||!boundaries.length)throw new Error('No se detectaron segmentos.');
+    vSegs=boundaries.map(function(b){
+      var text=lines.slice((b.from||1)-1,(b.to||lines.length)).join('\n').trim();
+      return{key:b.key||'seg',label:b.label||(b.key||'seg')+'.mp3',text:text};
+    }).filter(function(s){return s.text.length>0;});
+    if(!vSegs.length)throw new Error('Segmentos vacios. Revisa el guion.');
+    vBlobs={};renderVSegs();
     document.getElementById('vGenAll').disabled=false;
-    document.getElementById('vMsg').textContent=vSegs.length+' segmentos detectados. Revisa y luego genera.';
+    document.getElementById('vMsg').textContent=vSegs.length+' segmentos detectados con IA.';
     document.getElementById('vMsg').className='t-ok';
-  }catch(e){document.getElementById('vMsg').textContent=e.message;document.getElementById('vMsg').className='t-err';}
+  }catch(e){
+    document.getElementById('vMsg').textContent='Error: '+e.message;
+    document.getElementById('vMsg').className='t-err';
+  }
   btn.disabled=false;btn.textContent='Detectar segmentos con IA';
 });
 
