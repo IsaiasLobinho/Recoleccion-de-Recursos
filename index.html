@@ -1130,15 +1130,45 @@ async function searchClipPuesto(i,manualQ){
   }catch(e){seg.status='error';seg.errorMsg=e.message;}
   renderClips();
 }
+// YouTube-only search (no Claude) — used by batch search
+async function searchClipYouTube(i){
+  var seg=clipSegs[i];
+  seg.status='loading';seg.errorMsg='';renderClips();
+  try{
+    var vids=await ytSearch(seg.query,{max:10});
+    vids=vids.sort(function(a,b){return titleClean(b.title)-titleClean(a.title);}).slice(0,6);
+    seg.videos=vids;seg.status='done';
+  }catch(e){seg.status='error';seg.errorMsg=e.message;}
+  renderClips();
+}
+
 
 async function clipsSearchAll(){
   var btn=document.getElementById('clipsSearchAll');btn.disabled=true;
-  for(var i=0;i<clipSegs.length;i++){
-    document.getElementById('clipsProgress').textContent='Buscando puesto '+clipSegs[i].num+' ('+( i+1)+'/'+clipSegs.length+')...';
-    await searchClipPuesto(i);
-    await new Promise(function(r){setTimeout(r,350);});
+  var prog=document.getElementById('clipsProgress');
+  // ONE Claude call for all queries at once
+  prog.textContent='Generando queries con IA (1 llamada para todos)...';
+  try{
+    var titles=clipSegs.map(function(s,i){return (i+1)+'. '+s.title;}).join('\n');
+    var batchPrompt='Generate YouTube search queries for these exact vehicle names. For each, put the vehicle name in double quotes and add at most one relevant term (documentary, restoration, walkaround, footage). Return ONLY a JSON array of strings, one per vehicle, in the same order:\n\n'+titles;
+    var raw=await callAI('You are a YouTube search expert. Return ONLY a JSON array of search query strings, nothing else.',batchPrompt,500);
+    var s=raw.indexOf('['),e=raw.lastIndexOf(']');
+    var queries=s>-1?JSON.parse(raw.slice(s,e+1)):[];
+    clipSegs.forEach(function(seg,i){if(queries[i])seg.query=queries[i];});
+  }catch(err){
+    // Fallback: use titles directly in quotes (no Claude needed)
+    clipSegs.forEach(function(seg){
+      seg.query='"'+seg.title.split('\u2014')[0].split('-')[0].trim()+'"';
+    });
+    prog.textContent='Queries generadas (fallback sin IA)';
   }
-  document.getElementById('clipsProgress').textContent='Listo.';btn.disabled=false;
+  // Now search YouTube for each (no more Claude calls)
+  for(var i=0;i<clipSegs.length;i++){
+    prog.textContent='Buscando en YouTube: '+clipSegs[i].num+' ('+( i+1)+'/'+clipSegs.length+')...';
+    await searchClipYouTube(i);
+    await new Promise(function(r){setTimeout(r,300);});
+  }
+  prog.textContent='Listo.';btn.disabled=false;
 }
 
 function renderClips(){
@@ -1526,10 +1556,29 @@ document.getElementById('vDetectBtn').addEventListener('click',async function(){
   if(!script){alert('Pega el guion primero.');return;}
   var btn=this;btn.disabled=true;btn.textContent='Detectando...';
   document.getElementById('vMsg').textContent='';
+  // Try regex detection first (free, no Claude needed)
+  var regexSegs=parseSegs(script);
+  if(regexSegs.length>=2){
+    vSegs=regexSegs.map(function(s){
+      return{key:'top'+s.num,label:'top'+s.num+'.mp3',text:s.text};
+    });
+    // Add intro if there's text before first segment
+    var firstPos=script.indexOf(regexSegs[0].text.slice(0,20));
+    if(firstPos>80){
+      vSegs.unshift({key:'intro',label:'intro.mp3',text:script.slice(0,firstPos).trim()});
+    }
+    vBlobs={};renderVSegs();
+    document.getElementById('vGenAll').disabled=false;
+    document.getElementById('vMsg').textContent=vSegs.length+' segmentos detectados (sin IA).';
+    document.getElementById('vMsg').className='t-ok';
+    btn.disabled=false;btn.textContent='Detectar segmentos con IA';return;
+  }
+  // Regex didn't find enough segments, use Claude (costs tokens)
+  document.getElementById('vMsg').textContent='Regex no encontro segmentos, usando IA...';
   try{
     // Step 1: Ask AI for segment MARKERS only (tiny JSON, never breaks)
     var sys='Analyze this script and identify narration segments. Return ONLY this exact JSON, no other text, no code blocks:\n[{"key":"intro","label":"intro.mp3","start":"first 6 unique words of this segment"},{"key":"top10","label":"top10.mp3","start":"first 6 unique words"}]\nKeys to use: intro (if exists), top10 down to top1, outro (if exists).\nIf no numbered structure, use segment1, segment2, etc.\nOnly return the JSON array, nothing else.';
-    var raw=await callAI(sys,script,2000);
+    var raw=await callAI(sys,script.slice(0,3000),600);
     var markers=safeParseVoiceJSON(raw);
     if(!markers||!markers.length)throw new Error('No se detectaron segmentos. Revisá que el guion tenga estructura.');
     // Step 2: Use markers to extract actual text from original script
