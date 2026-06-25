@@ -1009,7 +1009,9 @@ async function ytSearch(query,opts){
   opts=opts||{};
   var k=gk(K.yt);
   if(!k)throw new Error('Falta YouTube API Key.');
-  var params=new URLSearchParams({part:'snippet',q:query,type:'video',maxResults:opts.max||10,videoDuration:'medium',order:opts.order||'relevance',relevanceLanguage:'en',key:k});
+  // Add -shorts to exclude YouTube Shorts, use long duration for documentaries
+  var cleanQuery=query+' -shorts';
+  var params=new URLSearchParams({part:'snippet',q:cleanQuery,type:'video',maxResults:opts.max||10,videoDuration:'long',order:opts.order||'relevance',key:k});
   if(opts.after)params.set('publishedAfter',opts.after);
   var r=await fetch('https://www.googleapis.com/youtube/v3/search?'+params);
   if(!r.ok){var e=await r.json().catch(function(){return{};});throw new Error((e.error&&e.error.message)||'YouTube '+r.status);}
@@ -1108,8 +1110,13 @@ document.getElementById('clipsAnalyze').addEventListener('click',function(){
 });
 
 async function getClipQuery(seg){
-  try{return await callAI('Genera la mejor query de YouTube en ingles para encontrar footage b-roll del vehiculo. Incluye marca Y modelo exacto. Agrega: documentary, footage, truck show, restoration, walkaround. SOLO la query sin comillas.','Tema: '+seg.title+'\nContexto: '+seg.context.slice(0,250),80);}
-  catch(e){return seg.query;}
+  try{
+    var prompt='Vehicle to search on YouTube: '+seg.title+'\n\nGenerate a strict YouTube search query that will return videos ONLY about this exact vehicle.\nRULES:\n- Start with the exact vehicle name in double quotes example: \"International LoneStar\"\n- Add at most ONE extra term: documentary OR restoration OR walkaround OR footage OR review\n- Do NOT add generic words like trucks, vehicles, heavy, transport\n- Return ONLY the search query, nothing else';
+    return await callAI('You are a YouTube search expert for a trucking channel. Generate precise search queries using exact vehicle names in quotes.',prompt,80);
+  }catch(e){
+    // Fallback: use exact title in quotes
+    return '"'+seg.title.split('—')[0].split('-')[0].trim()+'"';
+  }
 }
 
 async function searchClipPuesto(i,manualQ){
@@ -1287,7 +1294,7 @@ document.getElementById('compSearch').addEventListener('click',async function(){
   var days=parseInt(document.getElementById('compPeriod').value);
   var after=days>0?new Date(Date.now()-days*86400000).toISOString():undefined;
   try{
-    var vids=await ytSearch(q+' trucks heavy vehicles',{max:10,order:order,after:after});
+    var vids=await ytSearch(q,{max:10,order:order,after:after});
     vids=await enrichVPH(vids);
     window.compVids=vids;
     document.getElementById('compResults').innerHTML=vids.map(function(v,i){
@@ -1466,16 +1473,68 @@ function extractSegmentsManually(text){
   return segs.length?segs:null;
 }
 
+function extractTextByMarkers(script, markers){
+  var segs=[];
+  // Find position of each marker in the script
+  var positions=markers.map(function(seg){
+    var start=seg.start||'';
+    // Search for the first 4+ words of the marker in the script
+    var words=start.trim().split(/\s+/).slice(0,5).join(' ');
+    var pos=words.length>3?script.indexOf(words):-1;
+    // Fallback: try shorter match
+    if(pos===-1){
+      words=start.trim().split(/\s+/).slice(0,3).join(' ');
+      pos=words.length>1?script.indexOf(words):-1;
+    }
+    return{seg:seg,pos:pos};
+  });
+  // Sort by position found
+  positions=positions.filter(function(p){return p.pos>=0;});
+  positions.sort(function(a,b){return a.pos-b.pos;});
+  // Extract text between positions
+  for(var i=0;i<positions.length;i++){
+    var startPos=positions[i].pos;
+    var endPos=i+1<positions.length?positions[i+1].pos:script.length;
+    var text=script.slice(startPos,endPos).trim();
+    if(text){
+      segs.push({
+        key:positions[i].seg.key,
+        label:positions[i].seg.label,
+        text:text
+      });
+    }
+  }
+  // If no markers found, fall back to parseSegs
+  if(!segs.length){
+    var parsed=parseSegs(script);
+    if(parsed.length){
+      var introEnd=script.indexOf(parsed[0].text.slice(0,30));
+      if(introEnd>60){
+        segs.push({key:'intro',label:'intro.mp3',text:script.slice(0,introEnd).trim()});
+      }
+      parsed.forEach(function(s){
+        segs.push({key:'top'+s.num,label:'top'+s.num+'.mp3',text:s.text});
+      });
+    }
+  }
+  return segs;
+}
+
+
 document.getElementById('vDetectBtn').addEventListener('click',async function(){
   var script=document.getElementById('vScript').value.trim();
   if(!script){alert('Pega el guion primero.');return;}
   var btn=this;btn.disabled=true;btn.textContent='Detectando...';
   document.getElementById('vMsg').textContent='';
   try{
-    var sys='Analiza este guion y detecta todos los segmentos de audio para narrar.\nResponde UNICAMENTE con un JSON array. Ningun texto antes ni despues. Sin bloques de codigo. Sin caracteres especiales en los campos.\nFormato exacto (sustituye SEGMENT_TEXT con el texto real, sin comillas internas ni saltos de linea):\n[{"key":"intro","label":"intro.mp3","text":"SEGMENT_TEXT"},{"key":"top10","label":"top10.mp3","text":"SEGMENT_TEXT"}]\nClaves: intro, top10,top9...top1, outro segun corresponda.\nIMPORTANTE: en el campo text usa el texto completo pero reemplaza comillas dobles por comillas simples y saltos de linea por espacios.';
-    var raw=await callAI(sys,script,4000);
-    vSegs=safeParseVoiceJSON(raw);
-    if(!vSegs||!vSegs.length)throw new Error('No se detectaron segmentos. Verificá el formato del guion.');
+    // Step 1: Ask AI for segment MARKERS only (tiny JSON, never breaks)
+    var sys='Analyze this script and identify narration segments. Return ONLY this exact JSON, no other text, no code blocks:\n[{"key":"intro","label":"intro.mp3","start":"first 6 unique words of this segment"},{"key":"top10","label":"top10.mp3","start":"first 6 unique words"}]\nKeys to use: intro (if exists), top10 down to top1, outro (if exists).\nIf no numbered structure, use segment1, segment2, etc.\nOnly return the JSON array, nothing else.';
+    var raw=await callAI(sys,script,2000);
+    var markers=safeParseVoiceJSON(raw);
+    if(!markers||!markers.length)throw new Error('No se detectaron segmentos. Revisá que el guion tenga estructura.');
+    // Step 2: Use markers to extract actual text from original script
+    vSegs=extractTextByMarkers(script,markers);
+    if(!vSegs||!vSegs.length)throw new Error('No se pudo extraer el texto de los segmentos.');
     vBlobs={};
     renderVSegs();
     document.getElementById('vGenAll').disabled=false;
