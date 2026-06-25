@@ -1051,20 +1051,34 @@ function titleClean(t){
 }
 
 function parseSegs(raw){
+  // Normalize: remove quotes around titles for cleaner matching
   var strats=[
-    /\b(?:puesto|top|lugar|posicion|numero)\b[\s:\-#.]{0,12}(\d{1,2})\b/gi,
-    /(?:^|\s)#\s?(\d{1,2})\b/gim,
-    /^[ \t]*(\d{1,2})\s*[.):\-]\s+\S/gm,
-    /^[ \t]*(\d{1,2})[ \t]*$/gm
+    // "puesto / top / lugar / posicion / numero N"
+    {re:/\b(?:puesto|top|lugar|posicion|numero)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
+    // [10] bracket format (user's format)
+    {re:/^\[(\d{1,2})\][\s\-:]/gm, grp:1},
+    // (10) paren format
+    {re:/^\((\d{1,2})\)[\s\-:]/gm, grp:1},
+    // #10 hashtag
+    {re:/(?:^|\s)#\s?(\d{1,2})\b/gim, grp:1},
+    // 10. or 10) or 10: or 10- followed by content
+    {re:/^[ \t]*(\d{1,2})\s*[.):\-]\s+\S/gm, grp:1},
+    // number alone on its own line
+    {re:/^[ \t]*(\d{1,2})[ \t]*$/gm, grp:1}
   ];
   for(var si=0;si<strats.length;si++){
-    var found=[];var re=strats[si];var m;re.lastIndex=0;
-    while((m=re.exec(raw))!==null){
-      var n=parseInt(m[1]||m[2],10);
+    var strat=strats[si];var found=[];var m;
+    strat.re.lastIndex=0;
+    while((m=strat.re.exec(raw))!==null){
+      var n=parseInt(m[strat.grp]||m[1],10);
       if(!n||n<1||n>30)continue;
-      found.push({idx:m.index,num:String(m[1]||m[2])});
+      found.push({idx:m.index,num:String(n)});
     }
-    if(found.length>=2)return buildSegs(raw,found);
+    if(found.length>=2){
+      // Remove duplicates at same position
+      found=found.filter(function(v,i,a){return i===0||v.idx!==a[i-1].idx;});
+      return buildSegs(raw,found);
+    }
   }
   return[];
 }
@@ -1386,17 +1400,82 @@ function updateNarratorInfo(){
 }
 document.getElementById('vSpeed').addEventListener('input',function(){document.getElementById('vSpeedVal').textContent=parseFloat(this.value).toFixed(2);});
 
+
+// Robust JSON parser for voice segments
+function safeParseVoiceJSON(raw){
+  if(!raw)return null;
+  // Try direct parse
+  try{
+    var parsed=JSON.parse(raw);
+    if(Array.isArray(parsed)&&parsed.length)return parsed;
+  }catch(e){}
+  // Find array boundaries
+  var s=raw.indexOf('['),e=raw.lastIndexOf(']');
+  if(s===-1||e===-1||e<=s)return null;
+  var slice=raw.slice(s,e+1);
+  // Try parse as-is
+  try{
+    var parsed=JSON.parse(slice);
+    if(Array.isArray(parsed)&&parsed.length)return parsed;
+  }catch(e){}
+  // Sanitize: remove control chars, fix common issues
+  try{
+    var clean=slice
+      .replace(/[\r\n\t]/g,' ')        // newlines to spaces
+      .replace(/\\n/g,' ')              // escaped newlines
+      .replace(/,\s*}/g,'}')           // trailing commas in objects
+      .replace(/,\s*\]/g,']');         // trailing commas in arrays
+    var parsed=JSON.parse(clean);
+    if(Array.isArray(parsed)&&parsed.length)return parsed;
+  }catch(e){}
+  // Last resort: manual segment extraction from text
+  return extractSegmentsManually(raw);
+}
+
+// Fallback: extract segments from AI text even if JSON is broken
+function extractSegmentsManually(text){
+  var segs=[];
+  // Look for patterns like "key":"intro" or key: intro
+  var keyRe=/"key"\s*:\s*"([^"]+)"/g;
+  var labelRe=/"label"\s*:\s*"([^"]+)"/g;
+  var textRe=/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  var keys=[],labels=[],texts=[];
+  var m;
+  while((m=keyRe.exec(text))!==null)keys.push(m[1]);
+  while((m=labelRe.exec(text))!==null)labels.push(m[1]);
+  while((m=textRe.exec(text))!==null)texts.push(m[1]);
+  for(var i=0;i<keys.length;i++){
+    segs.push({key:keys[i],label:labels[i]||keys[i]+'.mp3',text:texts[i]||''});
+  }
+  // If still nothing, use regex parseSegs as fallback
+  if(!segs.length){
+    var rawScript=document.getElementById('vScript').value;
+    var parsed=parseSegs(rawScript);
+    if(parsed.length){
+      // Add intro from text before first segment
+      var firstIdx=rawScript.indexOf(parsed[0].text.slice(0,30));
+      if(firstIdx>50){
+        var introText=rawScript.slice(0,firstIdx).trim();
+        if(introText)segs.push({key:'intro',label:'intro.mp3',text:introText});
+      }
+      parsed.forEach(function(s){
+        segs.push({key:'top'+s.num,label:'top'+s.num+'.mp3',text:s.text});
+      });
+    }
+  }
+  return segs.length?segs:null;
+}
+
 document.getElementById('vDetectBtn').addEventListener('click',async function(){
   var script=document.getElementById('vScript').value.trim();
   if(!script){alert('Pega el guion primero.');return;}
   var btn=this;btn.disabled=true;btn.textContent='Detectando...';
   document.getElementById('vMsg').textContent='';
   try{
-    var sys='Analiza este guion de YouTube y detecta TODOS los segmentos de audio. Responde SOLO con JSON array valido:\n[{"key":"intro","label":"intro.mp3","title":"Introduccion","text":"texto completo del segmento"}]\nClaves posibles: intro, top10, top9..top1, outro. Si no hay numeracion, usa segment1, segment2, etc. El texto debe ser el contenido COMPLETO de ese segmento para narrar.';
+    var sys='Analiza este guion y detecta todos los segmentos de audio para narrar.\nResponde UNICAMENTE con un JSON array. Ningun texto antes ni despues. Sin bloques de codigo. Sin caracteres especiales en los campos.\nFormato exacto (sustituye SEGMENT_TEXT con el texto real, sin comillas internas ni saltos de linea):\n[{"key":"intro","label":"intro.mp3","text":"SEGMENT_TEXT"},{"key":"top10","label":"top10.mp3","text":"SEGMENT_TEXT"}]\nClaves: intro, top10,top9...top1, outro segun corresponda.\nIMPORTANTE: en el campo text usa el texto completo pero reemplaza comillas dobles por comillas simples y saltos de linea por espacios.';
     var raw=await callAI(sys,script,4000);
-    var s=raw.indexOf('['),e=raw.lastIndexOf(']');
-    if(s===-1)throw new Error('No se pudo detectar segmentos');
-    vSegs=JSON.parse(raw.slice(s,e+1));
+    vSegs=safeParseVoiceJSON(raw);
+    if(!vSegs||!vSegs.length)throw new Error('No se detectaron segmentos. Verificá el formato del guion.');
     vBlobs={};
     renderVSegs();
     document.getElementById('vGenAll').disabled=false;
