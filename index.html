@@ -430,6 +430,14 @@ tr:hover td{background:rgba(255,255,255,0.03);}
 .mt16{margin-top:16px;}
 .loading-dots::after{content:".";animation:dots 1.2s steps(3,end) infinite;}
 @keyframes dots{0%,20%{content:".";}40%{content:"..";}60%{content:"...";}80%,100%{content:"";}}
+
+/* AI VERDICT BADGES */
+.verdict-usar{background:rgba(74,222,128,.15);border:1px solid rgba(74,222,128,.35);color:var(--ok);font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;display:inline-block;}
+.verdict-revisar{background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);color:var(--warn);font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;display:inline-block;}
+.verdict-descartar{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--err);font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;display:inline-block;}
+.verdict-loading{background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--mute);font-size:10px;padding:2px 7px;border-radius:4px;display:inline-block;animation:vpulse 1s ease-in-out infinite;}
+@keyframes vpulse{0%,100%{opacity:.4;}50%{opacity:1;}}
+.ai-reason{font-size:10px;color:var(--mute);margin-top:3px;line-height:1.3;}
 </style>
 </head>
 <body>
@@ -564,6 +572,7 @@ tr:hover td{background:rgba(255,255,255,0.03);}
       </div>
       <div id="clipsToolbar" class="hidden" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
         <button class="btn btn-pri" id="clipsSearchAll">Buscar videos para todos</button>
+        <button class="btn btn-sec" id="clipsAnalyzeAllBtn" onclick="analyzeAllClips()">🔍 Analizar todos con IA</button>
         <button class="btn btn-sec" id="clipsClear">Limpiar</button>
         <span id="clipsProgress" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--mute);"></span>
       </div>
@@ -1146,13 +1155,35 @@ async function searchClipPuesto(i,manualQ){
   renderClips();
 }
 // YouTube-only search (no Claude) — used by batch search
+// YouTube-only search with multi-query fallback
 async function searchClipYouTube(i){
   var seg=clipSegs[i];
   seg.status='loading';seg.errorMsg='';renderClips();
   try{
-    var vids=await ytSearch(seg.query,{max:10});
+    // Build 3 progressive queries: specific → broad → minimal
+    var rawTitle=seg.title.split('"')[0].split('\u2014')[0].split('-')[0].trim();
+    var words=rawTitle.split(/\s+/);
+    var queries=[
+      seg.query,                              // AI query (e.g. "Ford CL9000" documentary)
+      '"'+rawTitle+'"',                       // exact name only in quotes
+      rawTitle,                               // name without quotes
+      words.slice(0,3).join(' ')+' truck',   // first 3 words + truck
+      words.slice(0,2).join(' ')+' truck vintage'  // minimal fallback
+    ].filter(function(q,i,a){return q&&q.length>3&&a.indexOf(q)===i;});
+
+    var vids=[];
+    for(var qi=0;qi<queries.length;qi++){
+      try{
+        var res=await ytSearch(queries[qi],{max:10});
+        res=res.filter(function(v){return isRealFootage(v.title);});
+        if(res.length>=2){vids=res;break;}  // good enough, stop
+        if(res.length>0&&qi===queries.length-1)vids=res; // last resort: take what we have
+      }catch(e2){continue;}
+    }
     vids=vids.sort(function(a,b){return titleClean(b.title)-titleClean(a.title);}).slice(0,6);
-    seg.videos=vids;seg.status='done';
+    seg.videos=vids;
+    if(!vids.length)seg.errorMsg='Sin resultados en ninguna de las '+queries.length+' queries. Intenta busqueda manual.';
+    seg.status='done';
   }catch(e){seg.status='error';seg.errorMsg=e.message;}
   renderClips();
 }
@@ -1164,8 +1195,12 @@ async function clipsSearchAll(){
   // ONE Claude call for all queries at once
   prog.textContent='Generando queries con IA (1 llamada para todos)...';
   try{
-    var titles=clipSegs.map(function(s,i){return (i+1)+'. '+s.title;}).join('\n');
-    var batchPrompt='Generate YouTube search queries for these exact vehicle names. For each, put the vehicle name in double quotes and add at most one relevant term (documentary, restoration, walkaround, footage). Return ONLY a JSON array of strings, one per vehicle, in the same order:\n\n'+titles;
+    // Extract only brand+model (remove Spanish subtitles in quotes or after dash)
+    var titles=clipSegs.map(function(s,i){
+      var clean=s.title.split('"')[0].split('\u201c')[0].split('\u2014')[0].split(' - ')[0].trim();
+      return (i+1)+'. '+clean;
+    }).join('\n');
+    var batchPrompt='Generate ONE YouTube search query per vehicle below. Use only the brand+model name in English. Put the vehicle name in double quotes. Add ONE optional term: documentary OR restoration OR walkaround OR footage OR review. Do NOT include any Spanish text. Return ONLY a JSON array of strings:\n\n'+titles;
     var raw=await callAI('You are a YouTube search expert. Return ONLY a JSON array of search query strings, nothing else.',batchPrompt,500);
     var s=raw.indexOf('['),e=raw.lastIndexOf(']');
     var queries=s>-1?JSON.parse(raw.slice(s,e+1)):[];
@@ -1197,7 +1232,11 @@ function renderClips(){
     if(seg.status==='error')st='<div class="t-err" style="padding:0 16px 10px;font-size:12px;">'+esc(seg.errorMsg)+'</div>';
     else if(seg.status==='done'&&!seg.videos.length)st='<div class="t-warn" style="padding:0 16px 10px;font-size:12px;">Sin resultados. Ajusta la busqueda.</div>';
     var vidHtml=seg.videos.length?'<div class="vgrid" style="padding:0 16px 16px;">'+seg.videos.map(function(v,vi){
-      return '<div class="vcard"><div class="vthumb"><img src="'+esc(v.thumb)+'" loading="lazy" onerror="this.style.display=\'none\'"></div><div class="vbody"><div class="vtitle">'+esc(v.title)+'</div><div class="vmeta">'+esc(v.channel)+'</div><div class="vscore">Limpieza: '+titleClean(v.title)+'/100</div><div class="vact"><label><input type="checkbox" '+(v.checked?'checked':'')+' data-a="ctog" data-ci="'+i+'" data-vi="'+vi+'"> usar</label><a href="'+esc(v.url)+'" target="_blank" rel="noopener">abrir</a><button class="del-btn" data-a="cdel" data-ci="'+i+'" data-vi="'+vi+'">x</button></div></div></div>';
+      var vbg=v.aiV==='DESCARTAR'?'opacity:.45;border-color:rgba(248,113,113,.2);':'';
+      var vbadge='';
+      if(v.aiV==='loading')vbadge='<div class="verdict-loading">Analizando...</div>';
+      else if(v.aiV&&v.aiV!=='loading')vbadge='<div class="verdict-'+v.aiV.toLowerCase()+'">'+esc(v.aiV)+'</div>'+(v.aiR?'<div class="ai-reason">'+esc(v.aiR)+'</div>':'');
+      return '<div class="vcard" style="'+vbg+'"><div class="vthumb"><img src="'+esc(v.thumb)+'" loading="lazy" onerror="this.style.display=\'none\'"></div><div class="vbody"><div class="vtitle">'+esc(v.title)+'</div><div class="vmeta">'+esc(v.channel)+'</div><div class="vscore">Limpieza: '+titleClean(v.title)+'/100</div><div class="vact"><label><input type="checkbox" '+(v.checked?'checked':'')+' data-a="ctog" data-ci="'+i+'" data-vi="'+vi+'"> usar</label><a href="'+esc(v.url)+'" target="_blank" rel="noopener">abrir</a><button class="del-btn" data-a="cdel" data-ci="'+i+'" data-vi="'+vi+'">x</button></div></div></div>';
     }).join('')+'</div>':'';
     return '<div class="puesto" data-ci="'+i+'"><div class="puesto-head"><div class="p-num">'+esc(seg.num)+'</div><div class="p-info"><h3>'+esc(seg.title)+'</h3><div class="ctx">'+esc(seg.query)+'</div></div></div><div class="gauge'+(seg.status==='loading'?' run':'')+'"></div><div class="qrow"><input type="text" value="'+esc(seg.query)+'" data-role="cq" data-ci="'+i+'"><button class="btn btn-sec btn-sm" data-a="csearch" data-ci="'+i+'" '+(seg.status==='loading'?'disabled':'')+'>'+(seg.status==='loading'?'Buscando...':seg.status==='done'?'Buscar de nuevo':'Buscar')+'</button><a class="btn-ghost" href="'+ytLink+'" target="_blank" rel="noopener">Manual</a></div>'+st+vidHtml+'<div style="display:flex;gap:8px;padding:0 16px 14px;flex-wrap:wrap;"><input type="text" placeholder="Pegar link manual" data-role="cman" data-ci="'+i+'" style="flex:1;font-size:12.5px;"><button class="btn btn-sec btn-sm" data-a="caddman" data-ci="'+i+'">Agregar</button></div></div>';
   }).join('');
@@ -1674,22 +1713,56 @@ document.getElementById('vGenAll').addEventListener('click',async function(){
   msg.textContent='Generacion completa - '+successCount+'/'+vSegs.length+' archivos.';msg.className='t-ok';
 });
 
-window.dlVoice=function(key,filename){var blob=vBlobs[key];if(!blob)return;dl(blob,filename);};
-document.getElementById('vSegments').addEventListener('click',function(e){
+window.dlVoice=function(key,filename){
+  var blob=vBlobs[key];
+  if(!blob){toast('Audio no encontrado. Genera primero.','warn');return;}
+  try{
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url;a.download=filename||key+'.mp3';
+    a.style.display='none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},3000);
+    toast('Descargando '+filename,'ok');
+  }catch(e){
+    toast('Error al descargar: '+e.message,'err');
+  }
+};
+document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-dlkey]');
   if(btn)dlVoice(btn.dataset.dlkey,btn.dataset.dllabel);
 });
 
 document.getElementById('vDownAll').addEventListener('click',async function(){
-  var entries=Object.entries(vBlobs);if(!entries.length)return;
-  if(typeof JSZip!=='undefined'){
-    var zip=new JSZip();
-    entries.forEach(function(pair){var seg=vSegs.find(function(s){return s.key===pair[0];});if(seg)zip.file(seg.label,pair[1]);});
-    var z=await zip.generateAsync({type:'blob'});
-    dl(z,'voces-'+vLang+'-traccion-total.zip');
-  }else{
-    for(var i=0;i<entries.length;i++){var seg=vSegs.find(function(s){return s.key===entries[i][0];});if(seg){dl(entries[i][1],seg.label);await new Promise(function(r){setTimeout(r,600);});}}
-  }
+  var entries=Object.entries(vBlobs);
+  if(!entries.length){toast('No hay audios generados aun.','warn');return;}
+  var btn=this;btn.disabled=true;
+  try{
+    if(typeof JSZip!=='undefined'){
+      toast('Empaquetando ZIP...','info');
+      var zip=new JSZip();
+      entries.forEach(function(pair){
+        var seg=vSegs.find(function(s){return s.key===pair[0];});
+        if(seg)zip.file(seg.label,pair[1]);
+      });
+      var z=await zip.generateAsync({type:'blob',compression:'STORE'});
+      var url=URL.createObjectURL(z);
+      var a=document.createElement('a');a.href=url;a.download='voces-'+vLang+'-traccion-total.zip';
+      a.style.display='none';document.body.appendChild(a);a.click();
+      setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},5000);
+      toast('ZIP descargado: '+entries.length+' archivos','ok');
+    }else{
+      // No JSZip: download one by one with delay
+      toast('Descargando '+entries.length+' archivos uno por uno...','info');
+      for(var i=0;i<entries.length;i++){
+        var seg=vSegs.find(function(s){return s.key===entries[i][0];});
+        if(seg)dlVoice(entries[i][0],seg.label);
+        await new Promise(function(r){setTimeout(r,800);});
+      }
+    }
+  }catch(e){toast('Error: '+e.message,'err');}
+  btn.disabled=false;
 });
 
 document.addEventListener('DOMContentLoaded',function(){
@@ -1720,6 +1793,95 @@ window.saveSelectedIdeas=async function(){
   var sa=document.getElementById('selectAllGen');if(sa)sa.checked=false;
   loadSavedIdeas();
 };
+
+
+// Fetch YouTube thumbnail as base64 (CORS is open on i.ytimg.com)
+async function thumbToBase64(url){
+  try{
+    var r=await fetch(url);
+    var blob=await r.blob();
+    return new Promise(function(res,rej){
+      var reader=new FileReader();
+      reader.onload=function(){res(reader.result.split(',')[1]);};
+      reader.onerror=rej;
+      reader.readAsDataURL(blob);
+    });
+  }catch(e){return null;}
+}
+
+// Analyze a batch of videos with Claude Vision (one call for all)
+async function analyzeVideosBatch(videos, vehicleName){
+  var k=gk(K.ant);
+  if(!k||!videos.length)return videos;
+  try{
+    // Build message content: text intro + pairs of (title text + thumbnail image)
+    var content=[];
+    content.push({type:'text',text:'You are a quality filter for a trucking documentary YouTube channel. I need REAL footage of: "'+vehicleName+'".\n\nFor each video below (thumbnail + title + channel), decide:\n- USAR: Real footage (actual vehicle at shows, walkarounds, reviews with truck on screen, documentaries, real driving footage)\n- REVISAR: Unclear, mixed, or low confidence\n- DESCARTAR: Video game/simulator, CGI, AI-generated, animation, person talking without showing truck, unrelated content\n\nReturn ONLY a JSON array in same order, no extra text:\n[{"v":"USAR","r":"brief reason"},{"v":"DESCARTAR","r":"brief reason"},...]'});
+
+    var base64s=await Promise.all(videos.map(function(v){return thumbToBase64(v.thumb);}));
+
+    videos.forEach(function(v,i){
+      content.push({type:'text',text:'Video '+(i+1)+': "'+v.title+'" | Channel: '+v.channel});
+      if(base64s[i]){
+        content.push({type:'image',source:{type:'base64',media_type:'image/jpeg',data:base64s[i]}});
+      }
+    });
+
+    var r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':k,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:600,messages:[{role:'user',content:content}]})
+    });
+    if(!r.ok)throw new Error('API '+r.status);
+    var d=await r.json();
+    var text=(d.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
+    var s=text.indexOf('['),e=text.lastIndexOf(']');
+    if(s===-1)throw new Error('No JSON');
+    var verdicts=JSON.parse(text.slice(s,e+1));
+    return videos.map(function(v,i){
+      var verd=verdicts[i]||{v:'REVISAR',r:''};
+      return Object.assign({},v,{aiV:verd.v||'REVISAR',aiR:verd.r||''});
+    });
+  }catch(e){
+    console.warn('AI analysis failed:',e);
+    return videos; // return unanalyzed if fails
+  }
+}
+
+// Analyze one puesto's videos and re-render
+async function analyzeClipPuesto(i){
+  var seg=clipSegs[i];
+  if(!seg||!seg.videos.length){toast('Sin videos para analizar.','warn');return;}
+  // Show loading state on all cards
+  seg.videos.forEach(function(v){v.aiV='loading';v.aiR='';});
+  renderClips();
+  var vehicleName=seg.title.split('"')[0].split('\u2014')[0].trim();
+  var analyzed=await analyzeVideosBatch(seg.videos,vehicleName);
+  seg.videos=analyzed;
+  // Auto-uncheck DESCARTAR videos
+  seg.videos.forEach(function(v){if(v.aiV==='DESCARTAR')v.checked=false;});
+  renderClips();
+  var usar=seg.videos.filter(function(v){return v.aiV==='USAR';}).length;
+  var desc=seg.videos.filter(function(v){return v.aiV==='DESCARTAR';}).length;
+  toast('Puesto '+seg.num+': '+usar+' buenos, '+desc+' descartados','ok');
+}
+
+// Analyze ALL puestos at once
+async function analyzeAllClips(){
+  var btn=document.getElementById('clipsAnalyzeAllBtn');
+  if(btn)btn.disabled=true;
+  var done=0,total=clipSegs.filter(function(s){return s.videos.length;}).length;
+  toast('Analizando '+total+' puestos con vision IA...','info');
+  for(var i=0;i<clipSegs.length;i++){
+    if(clipSegs[i].videos.length){
+      await analyzeClipPuesto(i);
+      done++;
+      await new Promise(function(r){setTimeout(r,300);});
+    }
+  }
+  if(btn)btn.disabled=false;
+  toast('Analisis completo: '+done+' puestos revisados','ok');
+}
 
 // ADMIN
 async function loadAdminUsers(){
