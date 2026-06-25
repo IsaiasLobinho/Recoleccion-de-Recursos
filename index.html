@@ -1703,6 +1703,81 @@ function renderVSegs(){
   }).join('');
 }
 
+
+// ── TTS ENGINE ROUTER ────────────────────────────────────
+// AI33: voice_id has prefix (elevenlabs_, minimax_, edge_, etc.)
+// Native ElevenLabs: raw voice ID without prefix
+async function generateTTS(text, voiceId, speed, apiKey, onProgress){
+  var isAI33 = /^(elevenlabs_|minimax_|clone_|edge_|kokoro_)/.test(voiceId.trim());
+  if(isAI33){
+    return generateTTSai33(text,voiceId.trim(),speed,apiKey,onProgress);
+  }else{
+    return generateTTSnative(text,voiceId.trim(),speed,apiKey);
+  }
+}
+
+// AI33 async TTS — POST then poll
+async function generateTTSai33(text,voiceId,speed,apiKey,onProgress){
+  // 1. Create task
+  var fd=new FormData();
+  fd.append('voice_id',voiceId);
+  fd.append('text',text.slice(0,999999));
+  fd.append('speed',String(Math.max(0.5,Math.min(1.5,speed))));
+  fd.append('with_transcript','false');
+  var r=await fetch('https://api.ai33.pro/v3/text-to-speech',{
+    method:'POST',
+    headers:{'xi-api-key':apiKey},
+    body:fd
+  });
+  if(!r.ok){
+    var et=await r.text().catch(function(){return r.status+'';});
+    throw new Error('AI33 create '+r.status+': '+et.slice(0,120));
+  }
+  var d=await r.json();
+  if(!d.success||!d.task_id)throw new Error('AI33: '+(d.message||JSON.stringify(d).slice(0,100)));
+  var taskId=d.task_id;
+  // 2. Poll until done (max 120 polls × 2s = 4min)
+  for(var attempt=0;attempt<120;attempt++){
+    await new Promise(function(res){setTimeout(res,2000);});
+    var pr=await fetch('https://api.ai33.pro/v1/task/'+taskId,{
+      headers:{'xi-api-key':apiKey,'Content-Type':'application/json'}
+    });
+    var pd=await pr.json();
+    if(onProgress&&pd.progress)onProgress(pd.progress);
+    if(pd.status==='done'){
+      var audioUrl=pd.metadata&&pd.metadata.audio_url;
+      if(!audioUrl)throw new Error('AI33: sin audio_url en respuesta');
+      var ar=await fetch(audioUrl);
+      if(!ar.ok)throw new Error('Error descargando audio: '+ar.status);
+      return await ar.blob();
+    }
+    if(pd.status==='error'||pd.status==='failed'){
+      throw new Error('AI33 task failed: '+(pd.error_message||'error desconocido'));
+    }
+    // status 'doing' or 'pending' — keep polling
+  }
+  throw new Error('Timeout: la tarea AI33 tardo mas de 4 minutos');
+}
+
+// Native ElevenLabs TTS (synchronous)
+async function generateTTSnative(text,voiceId,speed,apiKey){
+  var stability=parseFloat((document.getElementById('vStability')&&document.getElementById('vStability').value)||'0.5');
+  var similarity=parseFloat((document.getElementById('vSimilarity')&&document.getElementById('vSimilarity').value)||'0.75');
+  var vstyle=parseFloat((document.getElementById('vStyle')&&document.getElementById('vStyle').value)||'0.0');
+  var speakerBoost=document.getElementById('vSpeakerBoost')?document.getElementById('vSpeakerBoost').checked:true;
+  var r=await fetch('https://api.elevenlabs.io/v1/text-to-speech/'+voiceId,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','xi-api-key':apiKey},
+    body:JSON.stringify({
+      text:text.slice(0,4900),
+      model_id:'eleven_multilingual_v2',
+      voice_settings:{stability:stability,similarity_boost:similarity,style:vstyle,use_speaker_boost:speakerBoost,speed:speed}
+    })
+  });
+  if(!r.ok){var et=await r.text().catch(function(){return r.status+'';});throw new Error('ElevenLabs '+r.status+': '+et.slice(0,120));}
+  return await r.blob();
+}
+
 document.getElementById('vGenAll').addEventListener('click',async function(){
   if(!vSegs.length){alert('Detecta los segmentos primero.');return;}
   var btn=this;btn.disabled=true;
@@ -1733,22 +1808,10 @@ document.getElementById('vGenAll').addEventListener('click',async function(){
     if(!segText||!segText.trim()){seg.vStatus='error';seg.vError='Texto vacio';renderVSegs();continue;}
     try{
       msg.textContent='Generando '+seg.label+' ('+(i+1)+'/'+vSegs.length+')...';
-      var r=await fetch('https://api.elevenlabs.io/v1/text-to-speech/'+voiceId.trim(),{
-        method:'POST',
-        headers:{'Content-Type':'application/json','xi-api-key':elKey.trim()},
-        body:JSON.stringify({
-          text:segText.slice(0,4900),
-          model_id:'eleven_multilingual_v2',
-          voice_settings:{stability:stability,similarity_boost:similarity,style:vstyle,use_speaker_boost:speakerBoost,speed:speed}
-        })
+      // generateTTS auto-detects AI33 vs native ElevenLabs by voice ID prefix
+      vBlobs[seg.key]=await generateTTS(segText,voiceId,speed,elKey,function(pct){
+        msg.textContent='Generando '+seg.label+' - '+pct+'% ('+(i+1)+'/'+vSegs.length+')...';
       });
-      if(!r.ok){
-        var errBody=await r.text().catch(function(){return r.status+' error';});
-        var errMsg='ElevenLabs '+r.status;
-        try{var errJson=JSON.parse(errBody);errMsg=(errJson.detail&&(errJson.detail.message||errJson.detail))||errMsg;}catch(ee){}
-        throw new Error(errMsg);
-      }
-      vBlobs[seg.key]=await r.blob();
       successCount++;
       seg.vStatus='done';seg.vError='';
     }catch(e){
