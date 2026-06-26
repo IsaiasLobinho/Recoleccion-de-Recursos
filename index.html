@@ -1130,10 +1130,22 @@ function titleClean(t){
 // Returns false if title suggests game/simulation/AI content
 function isRealFootage(title){
   var t=title.toLowerCase();
-  var fakeTerms=['simulator','gameplay','gaming','american truck sim','euro truck sim',
-    ' ats ','ets2','ets 2','gta ','mod ','mods','ai generated','ai render',
-    'cgi ','animation','animated','render','virtual','3d model','rc truck',
-    'minecraft','roblox','lego'];
+  var fakeTerms=[
+    // Games & simulators
+    'simulator','gameplay','gaming','american truck sim','euro truck sim',
+    ' ats ','ets2','ets 2','gta ','mod ','mods','video game',
+    // AI & CGI
+    'ai generated','ai render','cgi ','animation','animated',
+    'render','virtual','3d model','3d animation',
+    // Toys & kids
+    'rc truck','rc car','toy truck','toy car','lego','minecraft','roblox',
+    'kids video','for kids','children','playroom','toddler','babies',
+    // Movies & cartoons
+    'pixar','disney cars','lightning mcqueen','mater ','cars movie',
+    'cartoon','anime','animated movie','animated film','dreamworks',
+    // Other irrelevant
+    'fortnite','gta v','need for speed'
+  ];
   for(var i=0;i<fakeTerms.length;i++){if(t.indexOf(fakeTerms[i])>-1)return false;}
   return true;
 }
@@ -1226,20 +1238,27 @@ async function searchClipYouTube(i){
   try{
     // Extract ONLY the brand + model — remove Spanish subtitles (text in quotes or after dash)
     var rawTitle=seg.title
-      .replace(/"[^"]*"/g,'')       // remove "subtitles in quotes"
-      .replace(/\u201c[^\u201d]*\u201d/g,'')  // remove "smart quote subtitles"
-      .replace(/\s*[-\u2014\u2013]\s*.*/,'')  // remove everything after dash/em-dash
+      .replace(/^\[\d{1,2}\]\s*/,'')           // remove [10] [5] etc at start
+      .replace(/^\(\d{1,2}\)\s*/,'')           // remove (10) (5) etc at start
+      .replace(/^\d{1,2}[\.\)]\s*/,'')         // remove 10. 5) etc at start
+      .replace(/"[^"]*"/g,'')                  // remove "Spanish subtitles"
+      .replace(/\u201c[^\u201d]*\u201d/g,'')   // remove smart-quote subtitles
+      .replace(/\u00ab[^\u00bb]*\u00bb/g,'')   // remove <<>> subtitles
+      .replace(/\s*[-\u2014\u2013]\s*.*/,'')   // remove after dash/em-dash
       .replace(/\s+/g,' ').trim();
 
     var words=rawTitle.split(/\s+/);
     // Build queries from most specific to least specific
+    // Context terms to add for truck/vehicle content
+    var truckTerms=['truck','semi truck','heavy truck','commercial truck','cab over','cabover'];
     var queries=[
-      '"'+rawTitle+'" footage',         // "Ford CL9000" footage
-      '"'+rawTitle+'"',                  // "Ford CL9000"
-      rawTitle,                          // Ford CL9000
-      rawTitle+' truck',                 // Ford CL9000 truck
-      words.slice(0,3).join(' ')+' truck',  // Ford CL9000 truck (3 words)
-      words.slice(0,2).join(' ')+' truck'   // Ford CL9000 (2 words)
+      '"'+rawTitle+'" truck',            // "Mack Cruise-Liner" truck  (most specific)
+      '"'+rawTitle+'"',                  // "Mack Cruise-Liner"
+      rawTitle+' truck',                 // Mack Cruise-Liner truck
+      rawTitle+' semi truck',            // Mack Cruise-Liner semi truck
+      words.slice(0,3).join(' ')+' truck',  // Mack Cruise-Liner truck (3 words)
+      words.slice(0,2).join(' ')+' truck',  // Mack Cruise (2 words)
+      words[0]+' '+words[1]+' heavy truck'  // Mack Cruise heavy truck
     ].filter(function(q,i,a){
       return q&&q.trim().length>3&&a.indexOf(q)===i;
     });
@@ -1275,10 +1294,18 @@ async function clipsSearchAll(){
   try{
     // Extract only brand+model (remove Spanish subtitles in quotes or after dash)
     var titles=clipSegs.map(function(s,i){
-      var clean=s.title.split('"')[0].split('\u201c')[0].split('\u2014')[0].split(' - ')[0].trim();
+      var clean=s.title
+        .replace(/^\[\d{1,2}\]\s*/,'')
+        .replace(/^\(\d{1,2}\)\s*/,'')
+        .replace(/^\d{1,2}[\.\)]\s*/,'')
+        .replace(/"[^"]*"/g,'')
+        .replace(/\u201c[^\u201d]*\u201d/g,'')
+        .replace(/\u00ab[^\u00bb]*\u00bb/g,'')
+        .replace(/\s*[-\u2014\u2013]\s*.*/,'')
+        .replace(/\s+/g,' ').trim();
       return (i+1)+'. '+clean;
     }).join('\n');
-    var batchPrompt='Generate ONE YouTube search query per vehicle below. Use only the brand+model name in English. Put the vehicle name in double quotes. Add ONE optional term: documentary OR restoration OR walkaround OR footage OR review. Do NOT include any Spanish text. Return ONLY a JSON array of strings:\n\n'+titles;
+    var batchPrompt='Generate ONE YouTube search query per vehicle below. RULES: 1) Use ONLY the brand+model name (no numbers, no brackets, no Spanish text). 2) Put it in double quotes. 3) Add the word "truck" or ONE of: documentary, restoration, walkaround. 4) Example: "Mack Cruise-Liner" truck. Return ONLY a JSON array of strings:\n\n'+titles;
     var raw=await callAI('You are a YouTube search expert. Return ONLY a JSON array of search query strings, nothing else.',batchPrompt,500);
     var s=raw.indexOf('['),e=raw.lastIndexOf(']');
     var queries=s>-1?JSON.parse(raw.slice(s,e+1)):[];
@@ -1745,29 +1772,49 @@ function renderVSegs(){
     var hasBlob=!!vBlobs[seg.key];
     var existingTA=document.querySelector('textarea[data-vseg-key="'+seg.key+'"]');
     var textVal=existingTA?existingTA.value:seg.text;
-    // Status persists from seg.status (not re-set to Pendiente if errored)
+    var charCount=textVal.length;
+    // Status badge
     var statusHtml;
     if(hasBlob){
       statusHtml='<span class="t-ok" style="font-size:12px;">✓ Listo</span>';
     }else if(seg.vStatus==='generating'){
       statusHtml='<span class="t-warn" style="font-size:12px;">⏳ Generando...</span>';
     }else if(seg.vStatus==='error'){
-      statusHtml='<span class="t-err" style="font-size:11px;">✗ '+esc(seg.vError||'Error')+'</span>';
+      statusHtml='<span class="t-err" style="font-size:11px;" title="'+esc(seg.vError||'')+'">✗ '+esc((seg.vError||'Error').slice(0,40))+'</span>';
     }else{
       statusHtml='<span class="t-mute" style="font-size:11.5px;">Pendiente</span>';
     }
-    var dlBtn=hasBlob?'<button class="btn btn-sec btn-sm" data-dlkey="'+esc(seg.key)+'" data-dllabel="'+esc(seg.label)+'">⬇ Descargar</button>':'';
+    // AI33 cost info
+    var costHtml='';
+    if(hasBlob&&seg.ai33Cost){
+      costHtml='<span style="font-family:\'JetBrains Mono\',monospace;font-size:10.5px;color:var(--acc);background:var(--acc-dim);padding:1px 7px;border-radius:4px;">AI33: '+seg.ai33Cost.toLocaleString('es-AR')+' cred</span>';
+    }else if(!hasBlob){
+      // Estimate based on chars (~1000 chars ≈ 500-800 AI33 credits rough estimate)
+      costHtml='<span style="font-size:10.5px;color:var(--mute);">~'+charCount+' chars</span>';
+    }
+    // Download button (individual)
+    var dlBtn=hasBlob?
+      '<button class="btn btn-ok btn-sm" data-dlkey="'+esc(seg.key)+'" data-dllabel="'+esc(seg.label)+'">⬇ '+esc(seg.label)+'</button>':'';
+    // Audio preview
     var audioHtml=hasBlob?'<audio class="audio-player" controls src="'+URL.createObjectURL(vBlobs[seg.key])+'"></audio>':'';
-    var border=hasBlob?'rgba(74,222,128,.25)':seg.vStatus==='error'?'rgba(248,113,113,.25)':'var(--border)';
-    return '<div class="vseg'+(hasBlob?' done':'')+'" id="vseg'+i+'" style="border-color:'+border+';">'
+    var borderColor=hasBlob?'rgba(74,222,128,.3)':seg.vStatus==='error'?'rgba(248,113,113,.3)':'var(--border)';
+    return '<div class="vseg'+(hasBlob?' done':'')+'" id="vseg'+i+'" style="border-color:'+borderColor+';">'
       +'<div class="vseg-head">'
-        +'<div class="vseg-name">'+esc(seg.label)+'</div>'
-        +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'+statusHtml+dlBtn+'</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+          +'<div class="vseg-name">'+esc(seg.label)+'</div>'
+          +costHtml
+        +'</div>'
+        +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
+          +statusHtml
+          +dlBtn
+        +'</div>'
       +'</div>'
       +'<textarea class="vseg-textarea" data-vseg-key="'+esc(seg.key)+'">'+esc(textVal)+'</textarea>'
       +audioHtml
       +'</div>';
   }).join('');
+  // Update total cost estimate in panel
+  updateVoiceCostEstimate();
 }
 
 
@@ -1817,7 +1864,8 @@ async function generateTTSai33(text,voiceId,speed,apiKey,onProgress){
       if(!audioUrl)throw new Error('AI33: sin audio_url en respuesta');
       var ar=await fetch(audioUrl);
       if(!ar.ok)throw new Error('Error descargando audio: '+ar.status);
-      return await ar.blob();
+      var blob=await ar.blob();
+      return{blob:blob,creditCost:pd.credit_cost||0};
     }
     if(pd.status==='error'||pd.status==='failed'){
       throw new Error('AI33 task failed: '+(pd.error_message||'error desconocido'));
@@ -1843,7 +1891,7 @@ async function generateTTSnative(text,voiceId,speed,apiKey){
     })
   });
   if(!r.ok){var et=await r.text().catch(function(){return r.status+'';});throw new Error('ElevenLabs '+r.status+': '+et.slice(0,120));}
-  return await r.blob();
+  var b=await r.blob();return{blob:b,creditCost:0};
 }
 
 document.getElementById('vGenAll').addEventListener('click',async function(){
@@ -1877,9 +1925,11 @@ document.getElementById('vGenAll').addEventListener('click',async function(){
     try{
       msg.textContent='Generando '+seg.label+' ('+(i+1)+'/'+vSegs.length+')...';
       // generateTTS auto-detects AI33 vs native ElevenLabs by voice ID prefix
-      vBlobs[seg.key]=await generateTTS(segText,voiceId,speed,elKey,function(pct){
+      var ttsResult=await generateTTS(segText,voiceId,speed,elKey,function(pct){
         msg.textContent='Generando '+seg.label+' - '+pct+'% ('+(i+1)+'/'+vSegs.length+')...';
       });
+      vBlobs[seg.key]=ttsResult.blob;
+      seg.ai33Cost=ttsResult.creditCost||0;
       successCount++;
       seg.vStatus='done';seg.vError='';
     }catch(e){
@@ -1898,7 +1948,8 @@ document.getElementById('vGenAll').addEventListener('click',async function(){
       dlSec.classList.remove('hidden');
       var dlInfo=document.getElementById('vDownInfo');
       var dlSub=document.getElementById('vDownSub');
-      if(dlInfo)dlInfo.textContent='✓ '+successCount+' audios listos para descargar';
+      var totalAI33=vSegs.reduce(function(s,sg){return s+(sg.ai33Cost||0);},0);
+      if(dlInfo)dlInfo.textContent='✓ '+successCount+' audios listos — AI33 consumido: '+totalAI33.toLocaleString('es-AR')+' cred.';
       if(dlSub)dlSub.textContent='Idioma: '+LANG_NAMES[vLang]+' — '+successCount+'/'+vSegs.length+' segmentos generados';
     }
     fetchAI33Credits(); // refresh AI33 credits after generation
@@ -2160,15 +2211,28 @@ function updateVoiceCostEstimate(){
   var n=vSegs.length;
   var segEl=document.getElementById('vSegCount');
   if(segEl)segEl.textContent=n;
+  // Total chars across all segments
+  var totalChars=vSegs.reduce(function(s,sg){
+    var ta=document.querySelector('textarea[data-vseg-key="'+sg.key+'"]');
+    return s+(ta?ta.value.length:sg.text.length);
+  },0);
+  // Pack cost
   var packEl=document.getElementById('vPackCost');
-  if(packEl){packEl.textContent=n*4;} // 4 languages
+  if(packEl)packEl.textContent=n*4;
   var packSub=document.getElementById('vPackSub');
-  if(packSub)packSub.textContent=n+' segs × 4 idiomas = '+n*4+' cuotas TTS';
+  if(packSub)packSub.textContent=n+' segs x 4 idiomas = '+n*4+' cuotas TTS';
+  // Cost row
   var costRow=document.getElementById('vCostRow');
   var costVal=document.getElementById('vCostVal');
-  if(costRow&&costVal&&n>0){
+  if(costRow&&n>0){
     costRow.classList.remove('hidden');
-    costVal.textContent=n+' cuotas TTS (1 por segmento)';
+    // Check if we have actual AI33 costs (post-generation)
+    var actualTotal=vSegs.reduce(function(s,sg){return s+(sg.ai33Cost||0);},0);
+    if(actualTotal>0){
+      costVal.textContent=n+' cuotas TTS internas + '+actualTotal.toLocaleString('es-AR')+' creditos AI33 consumidos';
+    }else{
+      costVal.textContent=n+' cuotas TTS + ~'+totalChars.toLocaleString('es-AR')+' chars (costo AI33 varia por texto)';
+    }
   }
 }
 
