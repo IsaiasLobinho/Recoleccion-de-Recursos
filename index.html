@@ -1153,17 +1153,14 @@ function isRealFootage(title){
 function parseSegs(raw){
   // Normalize: remove quotes around titles for cleaner matching
   var strats=[
-    // "puesto / top / lugar / posicion / numero N"
+    {re:/^\[(\d{1,2})\][\s\-:.]/gm, grp:1},
+    {re:/^\((\d{1,2})\)[\s\-:.]/gm, grp:1},
     {re:/\b(?:puesto|top|lugar|posicion|numero)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
-    // [10] bracket format (user's format)
-    {re:/^\[(\d{1,2})\][\s\-:]/gm, grp:1},
-    // (10) paren format
-    {re:/^\((\d{1,2})\)[\s\-:]/gm, grp:1},
-    // #10 hashtag
+    {re:/\b(?:platz|rang|nummer)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
+    {re:/\b(?:miejsce|pozycja|numer)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
+    {re:/\b(?:place|rank|spot)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
     {re:/(?:^|\s)#\s?(\d{1,2})\b/gim, grp:1},
-    // 10. or 10) or 10: or 10- followed by content
     {re:/^[ \t]*(\d{1,2})\s*[.):\-]\s+\S/gm, grp:1},
-    // number alone on its own line
     {re:/^[ \t]*(\d{1,2})[ \t]*$/gm, grp:1}
   ];
   for(var si=0;si<strats.length;si++){
@@ -1364,7 +1361,7 @@ document.getElementById('clipsDown').addEventListener('click',function(){dl(new 
 
 // SCRIPTS
 var currScript='';
-var DEFAULT_PROMPT='Sos un guionista cinematografico para "Traccion Total", canal de YouTube sobre camiones y vehiculos pesados.\n\nGenera un guion completo para un video "Top {COUNT}" sobre: "{TOPIC}".\nIdioma: {LANG}.\n\nESTRUCTURA OBLIGATORIA:\nINTRO:\n[3-4 oraciones potentes]\n\nPUESTO {COUNT}: [Nombre exacto del vehiculo]\n[Especificaciones, historia, por que es especial. 80-140 palabras.]\n\n(continuar hasta PUESTO 1)\n\nOUTRO:\n[Invitacion a suscribirse. 2-3 oraciones.]\n\nTono: apasionado, preciso, cinematografico. Sin emojis. Nombres de vehiculos exactos (marca + modelo).';
+var DEFAULT_PROMPT='Sos un guionista cinematografico para "Traccion Total", canal de YouTube sobre camiones y vehiculos pesados.\n\nGenera un guion completo para un video "Top {COUNT}" sobre: "{TOPIC}".\nIdioma: {LANG}.\n\nFORMATO OBLIGATORIO — usar EXACTAMENTE estos marcadores de segmento (los corchetes [N] son obligatorios para el sistema automatico):\n\nINTRO:\n[3-4 oraciones cinematograficas que enganchen desde el segundo 1]\n\n[{COUNT}] Nombre exacto del vehiculo (marca + modelo)\n[Especificaciones, historia, por que es especial. 80-140 palabras.]\n\n[{COUNT_M1}] Nombre exacto\n[texto]\n\n(continuar hasta [1])\n\nOUTRO:\n[Invitacion a suscribirse. 2-3 oraciones.]\n\nIMPORTANTE: Los marcadores [10] [9] [8]... son OBLIGATORIOS. Sin ellos el sistema no puede segmentar el audio. Tono apasionado y cinematografico. Sin emojis.';
 
 async function generateScript(prompt,maxTok){
   var output=await callAI('Sos un guionista experto para YouTube sobre camiones y vehiculos pesados.',prompt,maxTok||3500);
