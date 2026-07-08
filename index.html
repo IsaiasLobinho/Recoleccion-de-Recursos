@@ -928,8 +928,24 @@ async function enterApp(){
 async function loadKeysFromSupabase(){
   try{
     var res=await db.from('config').select('key,value');
-    if(res.data){res.data.forEach(function(r){if(r.value)sk(r.key,r.value);});}
-  }catch(e){console.warn('Config load failed',e);}
+    if(res.error)throw res.error;
+    var rows=res.data||[];
+    var loaded=0;
+    rows.forEach(function(r){if(r.value&&r.key){sk(r.key,r.value);loaded++;}});
+    // Check if critical keys are present
+    var hasAnt=!!gk(K.ant), hasYT=!!gk(K.yt), hasEL=!!gk(K.el);
+    if(loaded===0){
+      toast('No hay API keys en Supabase. Admin: ir a Inicio > Configurar y guardar.','warn');
+    }else if(!hasAnt||!hasYT){
+      toast(loaded+' keys cargadas de Supabase (faltan algunas).','warn');
+    }
+    // Store how many keys came from Supabase for the status panel
+    window._keysFromDb=loaded;
+    refreshApiStatus();
+  }catch(e){
+    console.warn('Config load failed',e);
+    toast('Error al cargar keys de Supabase: '+e.message,'err');
+  }
 }
 
 async function pingLastSeen(){
@@ -1008,22 +1024,53 @@ document.getElementById('saveCfgBtn').addEventListener('click',async function(){
   vals[K.vpl]=document.getElementById('cfgVpl').value.trim();
   vals[K.ven]=document.getElementById('cfgVen').value.trim();
   Object.keys(vals).forEach(function(k){sk(k,vals[k]);});
+  // Aggressive key cleaning — remove ALL whitespace (tabs, newlines, spaces)
+  Object.keys(vals).forEach(function(k){
+    if(vals[k])vals[k]=vals[k].replace(/[\s\n\r\t]/g,'');
+  });
+  // Save locally first
+  Object.keys(vals).forEach(function(k){sk(k,vals[k]);});
+  var m=document.getElementById('cfgMsg');
   if(db){
-    var sbRows=Object.keys(vals).filter(function(k){return SENSITIVE.includes(k)&&vals[k];}).map(function(k){return{key:k,value:vals[k],updated_at:new Date().toISOString()};});
-    if(sbRows.length)await db.from('config').upsert(sbRows,{onConflict:'key'});
+    var sbRows=Object.keys(vals)
+      .filter(function(k){return SENSITIVE.includes(k)&&vals[k]&&vals[k].length>4;})
+      .map(function(k){return{key:k,value:vals[k],updated_at:new Date().toISOString()};});
+    if(sbRows.length){
+      var res=await db.from('config').upsert(sbRows,{onConflict:'key'});
+      if(res.error){
+        m.textContent='Error al guardar en Supabase: '+res.error.message;
+        m.className='t-err';
+        toast('Error Supabase: '+res.error.message,'err');
+      }else{
+        m.textContent='Guardado en Supabase ('+sbRows.length+' keys). Colaboradores las reciben al iniciar sesion.';
+        m.className='t-ok';
+        toast('Keys sincronizadas a Supabase','ok');
+      }
+    }else{
+      m.textContent='Guardado localmente (completa los campos para sincronizar a Supabase).';
+      m.className='t-warn';
+    }
+  }else{
+    m.textContent='Guardado localmente (Supabase no conectado).';
+    m.className='t-warn';
   }
   refreshApiStatus();updateNarratorInfo();loadPromptSelect();
-  var m=document.getElementById('cfgMsg');
-  m.textContent=db?'Guardado en Supabase — colaboradores lo reciben al iniciar sesion':'Guardado localmente';
-  m.className='t-ok';
-  setTimeout(function(){m.textContent='';},3500);
+  setTimeout(function(){m.textContent='';},5000);
 });
 
 function refreshApiStatus(){
-  var items=[['Anthropic',gk(K.ant),'Guiones + queries'],['YouTube',gk(K.yt),'Clips e ideas'],['ElevenLabs',gk(K.el),'Voces'],['Supabase',gk(K.sbUrl),'Auth + DB']];
+  var items=[
+    ['Anthropic',gk(K.ant),'Guiones + queries'],
+    ['YouTube',gk(K.yt),'Clips e ideas'],
+    ['AI33 / ElevenLabs',gk(K.el),'Voces'],
+    ['Supabase',gk(K.sbUrl),'Auth + DB']
+  ];
+  var fromDb=window._keysFromDb;
+  var dbNote=fromDb>0?'<div style="font-size:11px;color:var(--ok);margin-top:4px;">'+fromDb+' keys cargadas de Supabase</div>'
+    :(db?'<div style="font-size:11px;color:var(--warn);margin-top:4px;">Admin: guarda las keys para que los colaboradores las reciban</div>':'');
   document.getElementById('apiStatus').innerHTML=items.map(function(x){
     return '<div><span style="color:'+(x[1]?'var(--ok)':'var(--err)')+';">'+(x[1]?'✓':'✗')+' '+x[0]+'</span> <span class="t-mute" style="font-size:11px;">— '+x[2]+'</span></div>';
-  }).join('');
+  }).join('')+dbNote;
 }
 
 // PROMPT LIBRARY
@@ -1068,7 +1115,15 @@ function dl(blob,name){var a=document.createElement('a');a.href=URL.createObject
 async function callAI(system,msg,maxTok){
   maxTok=maxTok||2500;
   var k=gk(K.ant);
-  if(!k)throw new Error('Falta API Key de Anthropic. Configurala en Inicio > Configurar.');
+  if(!k){
+    // Check if we're logged in but keys just didn't load
+    if(db&&user){
+      toast('Recargando keys de Supabase...','info');
+      await loadKeysFromSupabase();
+      k=gk(K.ant);
+    }
+    if(!k)throw new Error('API Key de Anthropic no disponible. Admin: ir a Inicio > Configurar y guardar todas las keys en Supabase.');
+  }
   var r=await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{'Content-Type':'application/json','x-api-key':k,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
@@ -1082,7 +1137,10 @@ async function callAI(system,msg,maxTok){
 async function ytSearch(query,opts){
   opts=opts||{};
   var k=gk(K.yt);
-  if(!k)throw new Error('Falta YouTube API Key.');
+  if(!k){
+    if(db&&user){await loadKeysFromSupabase();k=gk(K.yt);}
+    if(!k)throw new Error('YouTube API Key no disponible. Admin: guardar en Inicio > Configurar.');
+  }
   // Add -shorts to exclude YouTube Shorts, use long duration for documentaries
   // Keep query clean — game filtering is done POST-FETCH via isRealFootage()
   var cleanQuery=query.trim();
