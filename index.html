@@ -848,11 +848,21 @@ tr:hover td{background:rgba(255,255,255,0.03);}
 // ██████████████████████████████████████████████████████████
 (function(){
   var cfg={
-    tt_sb_url: '',  // Supabase Project URL
-    tt_sb_key: '',  // Supabase Anon Key
-    tt_admin:  '',  // Email del administrador
+    tt_sb_url: 'https://zuerxjovqfhzmcnsnmbz.supabase.co',
+    tt_sb_key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1ZXJ4am92cWZoem1jbnNubWJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMjY3OTQsImV4cCI6MjA5NzkwMjc5NH0.GKswwLdcTNp1A-HAZGV1ameAgRwtYKjgJaRumiEbpDI',
+    tt_admin:  'isaiaslobo829@gmail.com',
+    tt_ant:    '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',
+    tt_yt:     'AIzaSyBbY_ciBnEAXVk_6FlAuIt1ISxMnM00sdg',
+    tt_el:     'sk_jsp40a5ffrmebaoil8txlzilsey5trwmm6ihqm4v9uin4mk8',
+    tt_ves:    'elevenlabs_k8cFOyAg7B9qwBlDDNTC',
+    tt_vde:    'elevenlabs_re2r5d74PqDzicySNW0I',
+    tt_vpl:    'elevenlabs_HzBCRGsOskP44taMg2CT',
+    tt_ven:    'elevenlabs_dPah2VEoifKnZT37774q',
   };
-  Object.keys(cfg).forEach(function(k){if(cfg[k].trim())localStorage.setItem(k,cfg[k].trim());});
+  Object.keys(cfg).forEach(function(k){
+    var v=cfg[k].replace(/[\s\n\r\t]/g,'');
+    if(v)localStorage.setItem(k,v);
+  });
 })();
 // ██████████████████████████████████████████████████████████
 
@@ -927,6 +937,16 @@ async function enterApp(){
 
 async function loadKeysFromSupabase(){
   try{
+    // First push any locally available keys TO Supabase (covers first-run)
+    var SENSITIVE=['tt_ant','tt_yt','tt_el','tt_ves','tt_vde','tt_vpl','tt_ven'];
+    var toSync=SENSITIVE.map(function(k){
+      var v=localStorage.getItem(k)||'';
+      return v?{key:k,value:v,updated_at:new Date().toISOString()}:null;
+    }).filter(Boolean);
+    if(toSync.length){
+      await db.from('config').upsert(toSync,{onConflict:'key'});
+    }
+    // Then load from Supabase (catches keys added from other devices)
     var res=await db.from('config').select('key,value');
     if(res.error)throw res.error;
     var rows=res.data||[];
@@ -1956,9 +1976,46 @@ document.getElementById('vGenAll').addEventListener('click',async function(){
   var fill=document.getElementById('vProgFill');
   var msg=document.getElementById('vMsg');
   bar.classList.remove('hidden');msg.textContent='';
+  // Try to reload keys from Supabase if missing
+  if(db&&user&&(!gk(K.el)||!gk(K[NARRATORS[vLang].key]))){
+    msg.textContent='Cargando keys de Supabase...';
+    await loadKeysFromSupabase();
+  }
   var vk=K[NARRATORS[vLang].key];var voiceId=gk(vk);var elKey=gk(K.el);
-  if(!voiceId){toast('Voice ID no configurado para este idioma. Ve a Inicio > Configurar.','err');btn.disabled=false;bar.classList.add('hidden');return;}
-  if(!elKey){toast('ElevenLabs API Key no configurada. Ve a Inicio > Configurar.','err');btn.disabled=false;bar.classList.add('hidden');return;}
+  if(!voiceId){
+    toast('Voice ID no configurado para el idioma seleccionado. Admin: ir a Inicio > Configurar.','err');
+    msg.textContent='Voice ID faltante. Contacta al administrador.';msg.className='t-err';
+    btn.disabled=false;bar.classList.add('hidden');return;
+  }
+  if(!elKey){
+    toast('Key de AI33 no disponible. Admin: guardar en Inicio > Configurar.','err');
+    msg.textContent='Key AI33 faltante. Contacta al administrador.';msg.className='t-err';
+    btn.disabled=false;bar.classList.add('hidden');return;
+  }
+  // Validate AI33 key BEFORE starting (saves time if key is wrong)
+  msg.textContent='Verificando key AI33...';
+  try{
+    var testRes=await fetch('https://api.ai33.pro/v1/credits',{
+      headers:{'xi-api-key':elKey.replace(/[\s\n\r\t]/g,''),'Content-Type':'application/json'}
+    });
+    if(!testRes.ok){
+      var errTxt=await testRes.text().catch(function(){return testRes.status+'';});
+      var errDetail='';
+      try{var errJson=JSON.parse(errTxt);errDetail=errJson.message||errJson.error||'';}catch(ee){}
+      throw new Error('AI33 '+testRes.status+(errDetail?' — '+errDetail:''));
+    }
+    var credData=await testRes.json();
+    var availCreds=credData.credits!==undefined?credData.credits:0;
+    if(availCreds<vSegs.length*100){
+      toast('Creditos AI33 bajos: '+availCreds+'. Pueden no alcanzar para todos los segmentos.','warn');
+    }
+    document.getElementById('vAI33Credits').textContent=Number(availCreds).toLocaleString('es-AR');
+  }catch(keyErr){
+    msg.textContent='Key AI33 invalida: '+keyErr.message;msg.className='t-err';
+    toast('Key AI33 invalida: '+keyErr.message+'. Admin: verificar en Inicio > Configurar.','err');
+    btn.disabled=false;bar.classList.add('hidden');return;
+  }
+  msg.textContent='Key verificada. Iniciando generacion...';
   var userCredits=await getUserCredits();
   if(userCredits<vSegs.length){
     msg.textContent='Creditos insuficientes: '+userCredits+' disponibles, '+vSegs.length+' requeridos.';
@@ -1988,8 +2045,18 @@ document.getElementById('vGenAll').addEventListener('click',async function(){
       successCount++;
       seg.vStatus='done';seg.vError='';
     }catch(e){
-      seg.vStatus='error';seg.vError=e.message;
-      toast('Error en '+seg.label+': '+e.message,'err');
+      seg.vStatus='error';
+      var errMsg=e.message||String(e);
+      // Friendlier messages for common AI33 errors
+      if(errMsg.indexOf('401')>-1||errMsg.toLowerCase().indexOf('invalid')>-1||errMsg.toLowerCase().indexOf('unauthorized')>-1){
+        errMsg='Key invalida (401). Admin: verificar key AI33 en Configurar.';
+      }else if(errMsg.indexOf('429')>-1){
+        errMsg='Rate limit AI33 (429). Espera unos segundos y reintenta.';
+      }else if(errMsg.indexOf('402')>-1||errMsg.toLowerCase().indexOf('credit')>-1){
+        errMsg='Creditos AI33 insuficientes (402). Recargar cuenta.';
+      }
+      seg.vError=errMsg;
+      toast('Error en '+seg.label+': '+errMsg,'err');
     }
     fill.style.width=Math.round((i+1)/vSegs.length*100)+'%';
     renderVSegs();
@@ -2226,19 +2293,36 @@ async function testAI33Key(){
 var ai33SpentThisSession = 0;
 
 async function fetchAI33Credits(){
-  var k=gk(K.el);
-  if(!k){document.getElementById('vAI33Credits').textContent='Sin key';return;}
   var el=document.getElementById('vAI33Credits');
-  el.textContent='...';
+  // Try loading from Supabase if key missing
+  var k=gk(K.el);
+  if(!k&&db&&user){await loadKeysFromSupabase();k=gk(K.el);}
+  if(!k){
+    if(el){el.textContent='Sin key';el.className='cred-item-val err';el.title='Pedir al admin que guarde la key en Inicio > Configurar';}
+    return;
+  }
+  if(el)el.textContent='...';
   try{
     var r=await fetch('https://api.ai33.pro/v1/credits',{
       headers:{'xi-api-key':k.replace(/[\s\n\r\t]/g,''),'Content-Type':'application/json'}
     });
+    if(!r.ok){
+      var errTxt=await r.text().catch(function(){return '';});
+      var errMsg='Error '+r.status;
+      try{var ej=JSON.parse(errTxt);errMsg=(ej.message||ej.error||errMsg);}catch(ee){}
+      if(el){el.textContent='Error '+r.status;el.className='cred-item-val err';el.title=errMsg+' — Key posiblemente incorrecta';}
+      return;
+    }
     var d=await r.json();
     var cred=d.credits!==undefined?d.credits:(d.data&&d.data.credits!==undefined?d.data.credits:'?');
-    el.textContent=Number(cred).toLocaleString('es-AR');
-    el.className='cred-item-val '+(cred>500?'ok':cred>100?'warn':'err');
-  }catch(e){el.textContent='Error';el.className='cred-item-val err';}
+    if(el){
+      el.textContent=Number(cred).toLocaleString('es-AR');
+      el.className='cred-item-val '+(cred>500?'ok':cred>100?'warn':'err');
+      el.title='';
+    }
+  }catch(e){
+    if(el){el.textContent='Error';el.className='cred-item-val err';el.title='CORS o red: '+e.message;}
+  }
 }
 
 async function loadVoiceCreditsPanel(){
