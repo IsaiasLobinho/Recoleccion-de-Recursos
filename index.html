@@ -1992,30 +1992,8 @@ document.getElementById('vGenAll').addEventListener('click',async function(){
     msg.textContent='Key AI33 faltante. Contacta al administrador.';msg.className='t-err';
     btn.disabled=false;bar.classList.add('hidden');return;
   }
-  // Validate AI33 key BEFORE starting (saves time if key is wrong)
-  msg.textContent='Verificando key AI33...';
-  try{
-    var testRes=await fetch('https://api.ai33.pro/v1/credits',{
-      headers:{'xi-api-key':elKey.replace(/[\s\n\r\t]/g,''),'Content-Type':'application/json'}
-    });
-    if(!testRes.ok){
-      var errTxt=await testRes.text().catch(function(){return testRes.status+'';});
-      var errDetail='';
-      try{var errJson=JSON.parse(errTxt);errDetail=errJson.message||errJson.error||'';}catch(ee){}
-      throw new Error('AI33 '+testRes.status+(errDetail?' — '+errDetail:''));
-    }
-    var credData=await testRes.json();
-    var availCreds=credData.credits!==undefined?credData.credits:0;
-    if(availCreds<vSegs.length*100){
-      toast('Creditos AI33 bajos: '+availCreds+'. Pueden no alcanzar para todos los segmentos.','warn');
-    }
-    document.getElementById('vAI33Credits').textContent=Number(availCreds).toLocaleString('es-AR');
-  }catch(keyErr){
-    msg.textContent='Key AI33 invalida: '+keyErr.message;msg.className='t-err';
-    toast('Key AI33 invalida: '+keyErr.message+'. Admin: verificar en Inicio > Configurar.','err');
-    btn.disabled=false;bar.classList.add('hidden');return;
-  }
-  msg.textContent='Key verificada. Iniciando generacion...';
+  // Credits check is informational only — CORS may block it, doesn't stop generation
+  fetchAI33Credits().catch(function(){});
   var userCredits=await getUserCredits();
   if(userCredits<vSegs.length){
     msg.textContent='Creditos insuficientes: '+userCredits+' disponibles, '+vSegs.length+' requeridos.';
@@ -2307,10 +2285,8 @@ async function fetchAI33Credits(){
       headers:{'xi-api-key':k.replace(/[\s\n\r\t]/g,''),'Content-Type':'application/json'}
     });
     if(!r.ok){
-      var errTxt=await r.text().catch(function(){return '';});
-      var errMsg='Error '+r.status;
-      try{var ej=JSON.parse(errTxt);errMsg=(ej.message||ej.error||errMsg);}catch(ee){}
-      if(el){el.textContent='Error '+r.status;el.className='cred-item-val err';el.title=errMsg+' — Key posiblemente incorrecta';}
+      // Non-2xx from credits endpoint — show as N/A, generation will reveal if key is truly invalid
+      if(el){el.textContent='N/A';el.className='cred-item-val';el.title='Endpoint de creditos no disponible. La generacion funciona igual.';}
       return;
     }
     var d=await r.json();
@@ -2321,7 +2297,8 @@ async function fetchAI33Credits(){
       el.title='';
     }
   }catch(e){
-    if(el){el.textContent='Error';el.className='cred-item-val err';el.title='CORS o red: '+e.message;}
+    // CORS or network error — show neutral state, doesn't affect generation
+    if(el){el.textContent='N/A';el.className='cred-item-val';el.title='No disponible desde browser (CORS). La generacion funciona igual.';}
   }
 }
 
