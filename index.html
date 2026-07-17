@@ -1136,7 +1136,6 @@ async function callAI(system,msg,maxTok){
   maxTok=maxTok||2500;
   var k=gk(K.ant);
   if(!k){
-    // Check if we're logged in but keys just didn't load
     if(db&&user){
       toast('Recargando keys de Supabase...','info');
       await loadKeysFromSupabase();
@@ -1834,8 +1833,25 @@ document.getElementById('vDetectBtn').addEventListener('click',async function(){
     updateVoiceCostEstimate();
     document.getElementById('vMsg').className='t-ok';
   }catch(e){
-    document.getElementById('vMsg').textContent='Error: '+e.message;
-    document.getElementById('vMsg').className='t-err';
+    var errMsg=e.message||String(e);
+    if(errMsg.indexOf('Failed to fetch')>-1||errMsg.indexOf('NetworkError')>-1){
+      // Likely ad-blocker or network blocking api.anthropic.com — try paragraph fallback
+      var fallbackSegs=segmentByParagraphs(script);
+      if(fallbackSegs&&fallbackSegs.length>=2){
+        vSegs=fallbackSegs;vBlobs={};renderVSegs();
+        document.getElementById('vGenAll').disabled=false;
+        document.getElementById('vMsg').textContent=vSegs.length+' segmentos detectados por parrafos (IA bloqueada por el navegador). REVISA los cortes antes de generar.';
+        document.getElementById('vMsg').className='t-warn';
+        toast('IA bloqueada (posible ad-blocker). Segmentado por parrafos — revisa antes de generar.','warn');
+      }else{
+        document.getElementById('vMsg').textContent='No se pudo conectar a la IA. Desactiva el ad-blocker / Brave Shields para este sitio, o agrega marcadores [10] [9]... al guion.';
+        document.getElementById('vMsg').className='t-err';
+        toast('Conexion a IA bloqueada. Revisa ad-blocker o usa marcadores [N] en el guion.','err');
+      }
+    }else{
+      document.getElementById('vMsg').textContent='Error: '+errMsg;
+      document.getElementById('vMsg').className='t-err';
+    }
   }
   btn.disabled=false;btn.textContent='Detectar segmentos con IA';
 });
@@ -2389,6 +2405,25 @@ async function downloadAllVoices(oneByOne){
   }else{
     downloadAllVoices(true);
   }
+}
+
+
+// Fallback: split script by paragraphs when no markers and AI unavailable
+function segmentByParagraphs(script){
+  var paras=script.split(/\n\s*\n/).map(function(p){return p.trim();}).filter(function(p){return p.length>40;});
+  if(paras.length<2)return null;
+  var segs=[];
+  paras.forEach(function(p,i){
+    var key,label;
+    if(i===0){key='intro';label='intro.mp3';}
+    else if(i===paras.length-1){key='outro';label='outro.mp3';}
+    else{
+      var n=paras.length-1-i; // descending numbering for middle paragraphs
+      key='top'+n;label='top'+n+'.mp3';
+    }
+    segs.push({key:key,label:label,text:p});
+  });
+  return segs;
 }
 
 // ADMIN
