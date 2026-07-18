@@ -1233,10 +1233,11 @@ function parseSegs(raw){
     {re:/^\[(\d{1,2})\][\s\-:.]/gm, grp:1},
     {re:/^\((\d{1,2})\)[\s\-:.]/gm, grp:1},
     {re:/\b(?:puesto|top|lugar|posicion|numero)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
-    {re:/\b(?:platz|rang|nummer)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
+    {re:/\b(?:platz|rang|nummer|position)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
     {re:/\b(?:miejsce|pozycja|numer)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
-    {re:/\b(?:place|rank|spot)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
+    {re:/\b(?:place|rank|spot|number|position|entry)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
     {re:/(?:^|\s)#\s?(\d{1,2})\b/gim, grp:1},
+    {re:/^\*{0,2}(\d{1,2})[\.\):\-]/gm, grp:1},
     {re:/^[ \t]*(\d{1,2})\s*[.):\-]\s+\S/gm, grp:1},
     {re:/^[ \t]*(\d{1,2})[ \t]*$/gm, grp:1}
   ];
