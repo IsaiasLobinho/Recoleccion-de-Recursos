@@ -1233,8 +1233,8 @@ function parseSegs(raw){
     {re:/^\[(\d{1,2})\][\s\-:.]/gm, grp:1},
     {re:/^\((\d{1,2})\)[\s\-:.]/gm, grp:1},
     {re:/\b(?:puesto|top|lugar|posicion|numero)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
-    {re:/\b(?:platz|rang|nummer|position)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
-    {re:/\b(?:miejsce|pozycja|numer)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
+    {re:/\b(?:platz|rang|nummer|position|nr)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
+    {re:/\b(?:miejsce|pozycja|numer|nr|ranking)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
     {re:/\b(?:place|rank|spot|number|position|entry)\b[\s:#.\-]{0,12}(\d{1,2})\b/gi, grp:1},
     {re:/(?:^|\s)#\s?(\d{1,2})\b/gim, grp:1},
     {re:/^\*{0,2}(\d{1,2})[\.\):\-]/gm, grp:1},
@@ -1252,7 +1252,12 @@ function parseSegs(raw){
     if(found.length>=2){
       // Remove duplicates at same position
       found=found.filter(function(v,i,a){return i===0||v.idx!==a[i-1].idx;});
-      return buildSegs(raw,found);
+      // Sort by position in text
+      found.sort(function(a,b){return a.idx-b.idx;});
+      // Keep only first occurrence of each NUMBER (avoids specs/dates creating false cuts)
+      var seen={};
+      found=found.filter(function(v){if(seen[v.num])return false;seen[v.num]=true;return true;});
+      if(found.length>=2)return buildSegs(raw,found);
     }
   }
   return[];
